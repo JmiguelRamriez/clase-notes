@@ -19,6 +19,10 @@ default = []
 # `record` y la TUI de grabación devuelven un error explicando cómo
 # recompilar. El comando `process` siempre funciona.
 audio-capture = ["dep:cpal"]
+# Aceleración GPU para Whisper (requiere CUDA Toolkit + nvidia-driver en
+# Fedora: sudo dnf install cmake cuda-toolkit ; cargo build --features cuda).
+# Para RTX 3050 4GB usar chunks de 30s (ver config.toml). Sin CUDA, usa CPU.
+cuda = ["whisper-rs/cuda"]
 
 [dependencies]
 # Audio

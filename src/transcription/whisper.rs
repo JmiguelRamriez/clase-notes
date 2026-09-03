@@ -3,6 +3,9 @@
 //! Estrategia: cargar el modelo una vez, leer el WAV con `hound`,
 //! convertir las muestras a `f32` en rango [-1, 1], y ejecutar
 //! `full()` para obtener todos los segmentos.
+//! Para audios largos (> chunk_secs) hace chunked con overlap 1s:
+//! evita OOM en VRAM 4GB (RTX 3050) y permite progreso/cancel ación
+//! entre chunks. En CPU también evita 1 único buffer de 57M samples.
 
 use anyhow::{Context, Result};
 use hound::WavReader;
@@ -16,6 +19,8 @@ use crate::config::WhisperConfig;
 pub struct WhisperTranscriber {
     ctx: WhisperContext,
     language: String,
+    use_gpu: bool,
+    chunk_secs: u32,
 }
 
 impl WhisperTranscriber {
@@ -28,7 +33,12 @@ impl WhisperTranscriber {
             );
         }
         let mut params = WhisperContextParameters::default();
-        params.use_gpu(false); // CPU por defecto; más portable.
+        // RTX 3050 4GB: si use_gpu=true y el binario se compilo con --features cuda,
+        // whisper.cpp usará CUDA; si no, cae a CPU sin error.
+        params.use_gpu(cfg.use_gpu);
+        if cfg.use_gpu {
+            tracing::info!("Whisper GPU habilitado (use_gpu=true)");
+        }
         let ctx = WhisperContext::new_with_params(
             cfg.model_path.to_str().context("path de modelo no es UTF-8")?,
             params,
@@ -42,6 +52,8 @@ impl WhisperTranscriber {
         Ok(Self {
             ctx,
             language: cfg.language.clone(),
+            use_gpu: cfg.use_gpu,
+            chunk_secs: cfg.chunk_secs,
         })
     }
 
@@ -84,11 +96,13 @@ impl WhisperTranscriber {
         // Duración real después del downmix.
         let duration_secs = samples.len() as f32 / spec.sample_rate as f32;
         tracing::info!(
-            "transcribiendo {} muestras ({:.1}s, {} Hz, {} ch → mono)",
+            "transcribiendo {} muestras ({:.1}s, {} Hz, {} ch → mono, gpu={}, chunk={}s)",
             samples.len(),
             duration_secs,
             spec.sample_rate,
-            spec.channels
+            spec.channels,
+            self.use_gpu,
+            self.chunk_secs
         );
 
         // Si el WAV no es 16 kHz, hacemos un resample simple (linear) para
@@ -100,6 +114,26 @@ impl WhisperTranscriber {
             samples
         };
 
+        // Decidir chunked vs single
+        let chunk_secs = if self.chunk_secs == 0 { 0 } else { self.chunk_secs };
+        if chunk_secs == 0 || samples.len() <= (chunk_secs as usize * 16000) {
+            // Audio corto: single full (rápido, sin overhead)
+            return self.transcribe_samples(&samples);
+        }
+
+        // Audio largo: chunked con overlap 1s
+        self.transcribe_chunked(&samples, chunk_secs)
+    }
+
+    fn transcribe_samples(&self, samples: &[f32]) -> Result<String> {
+        if samples.is_empty() {
+            return Ok(String::new());
+        }
+        // Skip chunk silencioso (VAD simple RMS)
+        if is_silent(samples) {
+            tracing::debug!("chunk silencioso, se omite Whisper");
+            return Ok(String::new());
+        }
         let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
         params.set_language(Some(&self.language));
         params.set_print_realtime(false);
@@ -109,10 +143,9 @@ impl WhisperTranscriber {
 
         let mut state = self.ctx.create_state().context("creando estado Whisper")?;
         state
-            .full(params, &samples)
+            .full(params, samples)
             .context("ejecutando Whisper full()")?;
 
-        // Concatenar todos los segmentos.
         let num_segments = state.full_n_segments().context("contando segmentos")?;
         let mut text = String::new();
         for i in 0..num_segments {
@@ -129,12 +162,77 @@ impl WhisperTranscriber {
         }
         Ok(text)
     }
+
+    fn transcribe_chunked(&self, samples: &[f32], chunk_secs: u32) -> Result<String> {
+        let chunk_len = chunk_secs as usize * 16000;
+        let overlap = 16000; // 1s
+        let stride = chunk_len.saturating_sub(overlap).max(1);
+        let total_chunks = (samples.len() + stride - 1) / stride;
+        tracing::info!(
+            "chunked: {} chunks de {}s (overlap 1s), total {:.1}s",
+            total_chunks,
+            chunk_secs,
+            samples.len() as f32 / 16000.0
+        );
+        let mut full_text = String::new();
+        let mut chunk_idx = 0usize;
+        let mut start = 0usize;
+        while start < samples.len() {
+            let end = (start + chunk_len).min(samples.len());
+            let chunk = &samples[start..end];
+            chunk_idx += 1;
+            let from = start as f32 / 16000.0;
+            let to = end as f32 / 16000.0;
+            tracing::info!(
+                "  chunk {}/{} [{:.1}s - {:.1}s] {} samples",
+                chunk_idx,
+                total_chunks,
+                from,
+                to,
+                chunk.len()
+            );
+            let mut txt = self.transcribe_samples(chunk)?;
+            // Dedup overlap: si el chunk anterior termina igual que el prefijo del nuevo,
+            // recortar duplicado (heurística simple de 3 palabras)
+            if !full_text.is_empty() && !txt.is_empty() {
+                txt = dedup_overlap(&full_text, &txt);
+            }
+            if !txt.is_empty() {
+                if !full_text.is_empty() {
+                    full_text.push(' ');
+                }
+                full_text.push_str(&txt);
+            }
+            if end >= samples.len() {
+                break;
+            }
+            start += stride;
+        }
+        Ok(full_text)
+    }
 }
 
 fn num_cpus() -> i32 {
     std::thread::available_parallelism()
         .map(|n| n.get() as i32)
         .unwrap_or(4)
+}
+
+fn is_silent(samples: &[f32]) -> bool {
+    if samples.is_empty() {
+        return true;
+    }
+    // RMS < -50dB ~ 0.003
+    let rms = compute_rms(samples);
+    rms < 0.003
+}
+
+fn compute_rms(samples: &[f32]) -> f32 {
+    if samples.is_empty() {
+        return 0.0;
+    }
+    let sum_sq: f32 = samples.iter().map(|s| s * s).sum();
+    (sum_sq / samples.len() as f32).sqrt()
 }
 
 /// Resample lineal simple. Suficiente para audio de voz donde se busca
@@ -155,6 +253,28 @@ fn resample_linear(input: &[f32], from_rate: u32, to_rate: u32) -> Vec<f32> {
         out.push(v as f32);
     }
     out
+}
+
+/// Quita prefijo duplicado por overlap: si los últimos N palabras de `prev`
+/// coinciden con las primeras N palabras de `next`, recorta.
+fn dedup_overlap(prev: &str, next: &str) -> String {
+    let prev_words: Vec<&str> = prev.split_whitespace().collect();
+    let next_words: Vec<&str> = next.split_whitespace().collect();
+    if prev_words.len() < 3 || next_words.len() < 3 {
+        return next.to_string();
+    }
+    // Probar con 3, 4, 5 palabras de overlap
+    for n in (3..=5).rev() {
+        if n > prev_words.len() || n > next_words.len() {
+            continue;
+        }
+        let tail = &prev_words[prev_words.len() - n..];
+        let head = &next_words[..n];
+        if tail == head {
+            return next_words[n..].join(" ");
+        }
+    }
+    next.to_string()
 }
 
 #[cfg(test)]
@@ -179,5 +299,27 @@ mod tests {
     fn resample_linear_handles_empty() {
         let r = resample_linear(&[], 16000, 8000);
         assert!(r.is_empty());
+    }
+
+    #[test]
+    fn dedup_overlap_trims_duplicate() {
+        let prev = "hola mundo esta es una prueba";
+        let next = "es una prueba que sigue";
+        assert_eq!(dedup_overlap(prev, next), "que sigue");
+    }
+
+    #[test]
+    fn dedup_overlap_no_false_positive() {
+        let prev = "hola mundo";
+        let next = "otra cosa distinta";
+        assert_eq!(dedup_overlap(prev, next), "otra cosa distinta");
+    }
+
+    #[test]
+    fn is_silent_detects_silence() {
+        let silent = vec![0.0; 16000];
+        assert!(is_silent(&silent));
+        let loud = vec![0.5; 16000];
+        assert!(!is_silent(&loud));
     }
 }

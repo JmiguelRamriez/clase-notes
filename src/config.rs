@@ -41,6 +41,10 @@ pub struct WhisperConfig {
     pub model_path: PathBuf,
     #[serde(default = "default_language")]
     pub language: String,
+    #[serde(default = "default_use_gpu")]
+    pub use_gpu: bool,
+    #[serde(default = "default_chunk_secs")]
+    pub chunk_secs: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -78,6 +82,12 @@ fn default_channels() -> u16 {
 }
 fn default_language() -> String {
     "es".to_string()
+}
+fn default_use_gpu() -> bool {
+    false
+}
+fn default_chunk_secs() -> u32 {
+    30
 }
 fn default_endpoint() -> String {
     "http://localhost:11434".to_string()
@@ -125,6 +135,8 @@ impl Default for Config {
             whisper: WhisperConfig {
                 model_path: home.join(".local/share/clase-notes/ggml-tiny.bin"),
                 language: default_language(),
+                use_gpu: default_use_gpu(),
+                chunk_secs: default_chunk_secs(),
             },
             llm: LlmConfig {
                 endpoint: default_endpoint(),

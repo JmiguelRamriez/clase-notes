@@ -135,16 +135,49 @@ fn slug(s: &str) -> String {
 async fn run_doctor(cfg: &Config) {
     println!("=== clase-notes doctor ===\n");
 
-    // 1. Whisper model.
+    // 1. Whisper model + GPU.
     if cfg.whisper.model_path.exists() {
-        println!("✓ Whisper model: {}", cfg.whisper.model_path.display());
+        let meta = std::fs::metadata(&cfg.whisper.model_path).ok();
+        let size = meta
+            .map(|m| format!("{:.0} MB", m.len() as f64 / 1024.0 / 1024.0))
+            .unwrap_or_else(|| "?".into());
+        println!(
+            "✓ Whisper model: {} ({}), lang={}, gpu={}, chunk={}s",
+            cfg.whisper.model_path.display(),
+            size,
+            cfg.whisper.language,
+            cfg.whisper.use_gpu,
+            cfg.whisper.chunk_secs
+        );
+        if cfg.whisper.use_gpu {
+            // Intentar detectar GPU sin fallar si nvidia-smi no está
+            let gpu_info = std::process::Command::new("nvidia-smi")
+                .arg("--query-gpu=name,memory.total")
+                .arg("--format=csv,noheader")
+                .output();
+            match gpu_info {
+                Ok(o) if o.status.success() => {
+                    let txt = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                    if !txt.is_empty() {
+                        println!("  GPU detectada: {}", txt);
+                    } else {
+                        println!("  GPU: use_gpu=true pero nvidia-smi no reporta GPU");
+                    }
+                }
+                _ => println!("  ⚠ use_gpu=true pero nvidia-smi no encontrado — ¿driver/CUDA instalados?"),
+            }
+            #[cfg(not(feature = "cuda"))]
+            println!("  ⚠ Binario compilado SIN --features cuda: use_gpu no acelerará (recompila con --features cuda)");
+        } else {
+            println!("  (usa CPU; para RTX 3050 pon use_gpu=true en config.toml y recompila con --features cuda)");
+        }
     } else {
         println!(
             "✗ Whisper model NO encontrado: {}",
             cfg.whisper.model_path.display()
         );
         println!(
-            "  Descárgalo con:\n    ~/clase-notes/scripts/download-whisper-model.sh medium"
+            "  Descárgalo con:\n    ./scripts/download-whisper-model.sh small  # 4GB VRAM recomendado\n    ./scripts/download-whisper-model.sh medium # si tenés 8GB+"
         );
     }
 
@@ -166,6 +199,11 @@ async fn run_doctor(cfg: &Config) {
             "⚠ Bóveda Obsidian NO existe: {}",
             cfg.obsidian.vault_path.display()
         );
+    }
+
+    // 4. Tip para 1h en 4GB
+    if cfg.whisper.chunk_secs == 0 {
+        println!("  Tip: 1h de audio sin chunked puede OOM en 4GB. Pon chunk_secs=30 en config.toml");
     }
 }
 

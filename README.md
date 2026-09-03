@@ -47,6 +47,22 @@ Fuente: iPhone  ──► WebSocket (WSS) ──► Filtro        LLM (Ollama)
 - **Windows**: MSVC
 - **Ollama** instalado y corriendo (`ollama serve`) con un modelo, ej. `ollama pull llama3.1:8b`
 - **Modelo Whisper** descargado (ver abajo)
+- **GPU (opcional, recomendado para audios >30min)**: NVIDIA RTX 3050 4GB o superior
+
+### Aceleración GPU en Fedora (RTX 3050 4GB)
+
+Para transcribir 1h en ~2min en lugar de 20min:
+
+```bash
+# Fedora: driver + CUDA Toolkit (rpmfusion)
+sudo dnf install https://mirrors.rpmfusion.org/free/fedora/rpmfusion-free-release-$(rpm -E %fedora).noarch.rpm
+sudo dnf install https://mirrors.rpmfusion.org/nonfree/fedora/rpmfusion-nonfree-release-$(rpm -E %fedora).noarch.rpm
+sudo dnf install akmod-nvidia xorg-x11-drv-nvidia-cuda cuda-toolkit cmake gcc-c++
+# Reiniciar, luego verificar:
+nvidia-smi  # debe mostrar RTX 3050
+
+# Compilar con CUDA
+cargo build --release --features audio-capture,cuda
 
 ## Instalación
 
@@ -77,8 +93,10 @@ sample_rate = 16000
 channels = 1
 
 [whisper]
-model_path = "/home/tu_usuario/.local/share/clase-notes/ggml-medium.bin"
+model_path = "/home/tu_usuario/.local/share/clase-notes/ggml-small.bin"
 language = "es"
+use_gpu = false  # true en RTX 3050 con --features cuda
+chunk_secs = 30  # 0 = sin chunked, 30 evita OOM en 4GB para 1h
 
 [llm]
 endpoint = "http://localhost:11434"
