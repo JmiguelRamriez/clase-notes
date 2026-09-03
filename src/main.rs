@@ -20,6 +20,8 @@ use config::Config;
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Cargar .env si existe (para GROQ_API_KEY sin exportar)
+    let _ = dotenvy::dotenv();
     // Instalar crypto provider para rustls (ring).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
