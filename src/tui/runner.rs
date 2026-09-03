@@ -56,8 +56,10 @@ async fn run_loop(
                     return Ok(());
                 }
                 if !app.is_busy {
-                    if let AppAction::StartRecording = action {
-                        start_recording(app);
+                    match action {
+                        AppAction::StartRecording => start_recording(app),
+                        AppAction::StartProcessing => app.start_processing(),
+                        _ => {}
                     }
                 } else {
                     handle_busy_action(app, action);

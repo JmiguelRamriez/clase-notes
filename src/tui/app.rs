@@ -47,6 +47,9 @@ pub struct App {
     pub screen: Screen,
     pub menu_index: usize,
     pub record_form: RecordForm,
+    pub process_form: ProcessForm,
+    pub process_wavs: Vec<PathBuf>,
+    pub process_picker_index: usize,
     pub status: String,
     pub is_busy: bool,
     pub recent_notes: Vec<PathBuf>,
@@ -71,6 +74,16 @@ pub struct RecordForm {
     pub date: NaiveDate,
     pub tags: String,
     pub editing_field: usize, // 0=materia, 1=tema, 2=tags, 3=source, 4=preset
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ProcessForm {
+    pub wav_path: String,
+    pub materia: String,
+    pub tema: String,
+    pub tags: String,
+    pub date: NaiveDate,
+    pub editing_field: usize, // 0=wav, 1=materia, 2=tema, 3=tags
 }
 
 /// Fuente de audio para la grabación.
@@ -116,6 +129,12 @@ impl App {
                 date: Local::now().date_naive(),
                 ..Default::default()
             },
+            process_form: ProcessForm {
+                date: Local::now().date_naive(),
+                ..Default::default()
+            },
+            process_wavs: Vec::new(),
+            process_picker_index: 0,
             status: String::from("Listo. Usa ↑/↓ y Enter."),
             is_busy: false,
             recent_notes: Vec::new(),
@@ -155,7 +174,7 @@ impl App {
         match self.screen {
             Screen::Menu => self.handle_menu_key(key),
             Screen::Record => self.handle_record_key(key),
-            Screen::Process => Ok(AppAction::None),
+            Screen::Process => self.handle_process_key(key),
             Screen::Recent => self.handle_recent_key(key),
             Screen::Phone => self.handle_phone_key(key),
         }
@@ -180,7 +199,12 @@ impl App {
             KeyCode::Enter => {
                 let next = match self.menu_index {
                     0 => Screen::Record,
-                    1 => Screen::Process,
+                    1 => {
+                        // Preparar la lista de WAVs al entrar a Procesar
+                        self.process_form.date = Local::now().date_naive();
+                        self.refresh_wav_list();
+                        Screen::Process
+                    }
                     2 => {
                         self.load_recent()?;
                         Screen::Recent
@@ -337,6 +361,90 @@ impl App {
         }
     }
 
+    fn handle_process_key(&mut self, key: KeyEvent) -> Result<AppAction> {
+        if self.is_busy {
+            // Mientras procesa, solo Esc para volver al menú (no cancela el task)
+            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                self.screen = Screen::Menu;
+            }
+            return Ok(AppAction::None);
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.screen = Screen::Menu;
+                Ok(AppAction::None)
+            }
+            KeyCode::Char('r') | KeyCode::Char('R') => {
+                // Refrescar lista de WAVs
+                self.refresh_wav_list();
+                self.status = format!("✓ Lista refrescada ({} WAVs)", self.process_wavs.len());
+                Ok(AppAction::None)
+            }
+            KeyCode::Tab => {
+                self.process_form.editing_field = (self.process_form.editing_field + 1) % 4;
+                Ok(AppAction::None)
+            }
+            KeyCode::BackTab => {
+                // Shift+Tab retrocede
+                if self.process_form.editing_field == 0 {
+                    self.process_form.editing_field = 3;
+                } else {
+                    self.process_form.editing_field -= 1;
+                }
+                Ok(AppAction::None)
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                // Si estamos en el campo WAV, navegar el picker
+                if self.process_form.editing_field == 0 && !self.process_wavs.is_empty() {
+                    if self.process_picker_index > 0 {
+                        self.process_picker_index -= 1;
+                    } else {
+                        self.process_picker_index = self.process_wavs.len() - 1;
+                    }
+                    if let Some(p) = self.process_wavs.get(self.process_picker_index) {
+                        self.process_form.wav_path = p.display().to_string();
+                    }
+                }
+                Ok(AppAction::None)
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if self.process_form.editing_field == 0 && !self.process_wavs.is_empty() {
+                    self.process_picker_index =
+                        (self.process_picker_index + 1) % self.process_wavs.len();
+                    if let Some(p) = self.process_wavs.get(self.process_picker_index) {
+                        self.process_form.wav_path = p.display().to_string();
+                    }
+                }
+                Ok(AppAction::None)
+            }
+            KeyCode::Backspace => {
+                self.process_form_pop();
+                Ok(AppAction::None)
+            }
+            KeyCode::Char(c) => {
+                self.process_form_push(c);
+                Ok(AppAction::None)
+            }
+            KeyCode::Enter => {
+                if self.process_form.wav_path.trim().is_empty() {
+                    self.status = "Ingresá la ruta del WAV".into();
+                    return Ok(AppAction::None);
+                }
+                if self.process_form.materia.is_empty() || self.process_form.tema.is_empty() {
+                    self.status = "Materia y tema son obligatorios".into();
+                    return Ok(AppAction::None);
+                }
+                let p = std::path::Path::new(&self.process_form.wav_path);
+                if !p.exists() {
+                    self.status = format!("✗ No existe: {}", p.display());
+                    return Ok(AppAction::None);
+                }
+                return Ok(AppAction::StartProcessing);
+            }
+            _ => Ok(AppAction::None),
+        }
+    }
+
     fn handle_recent_key(&mut self, key: KeyEvent) -> Result<AppAction> {
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') => {
@@ -371,6 +479,111 @@ impl App {
         }
     }
 
+    fn process_form_pop(&mut self) {
+        match self.process_form.editing_field {
+            0 => {
+                self.process_form.wav_path.pop();
+            }
+            1 => {
+                self.process_form.materia.pop();
+            }
+            2 => {
+                self.process_form.tema.pop();
+            }
+            3 => {
+                self.process_form.tags.pop();
+            }
+            _ => {}
+        }
+    }
+
+    fn process_form_push(&mut self, c: char) {
+        match self.process_form.editing_field {
+            0 => self.process_form.wav_path.push(c),
+            1 => self.process_form.materia.push(c),
+            2 => self.process_form.tema.push(c),
+            3 => self.process_form.tags.push(c),
+            _ => {}
+        }
+    }
+
+    pub fn refresh_wav_list(&mut self) {
+        let mut wavs = Vec::new();
+        // 1) work_dir (recordings)
+        if let Ok(wd) = crate::config::work_dir() {
+            if let Ok(rd) = std::fs::read_dir(&wd) {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.extension().and_then(|s| s.to_str()) == Some("wav") {
+                        wavs.push(p);
+                    }
+                }
+            }
+        }
+        // 2) directorio actual
+        if let Ok(rd) = std::fs::read_dir(".") {
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().and_then(|s| s.to_str()) == Some("wav") {
+                    if !wavs.contains(&p) {
+                        wavs.push(p);
+                    }
+                }
+            }
+            // también subdirectorios de primer nivel con wavs (ej. ./grabaciones)
+            if let Ok(rd) = std::fs::read_dir(".") {
+                for e in rd.flatten() {
+                    let p = e.path();
+                    if p.is_dir() {
+                        if let Ok(inner) = std::fs::read_dir(&p) {
+                            for ee in inner.flatten() {
+                                let pp = ee.path();
+                                if pp.extension().and_then(|s| s.to_str()) == Some("wav") {
+                                    wavs.push(pp);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        // 3) home/grabaciones si existe
+        if let Some(home) = dirs::home_dir() {
+            for sub in ["grabaciones", "Grabaciones", "recordings"] {
+                let d = home.join(sub);
+                if let Ok(rd) = std::fs::read_dir(&d) {
+                    for e in rd.flatten() {
+                        let p = e.path();
+                        if p.extension().and_then(|s| s.to_str()) == Some("wav") {
+                            wavs.push(p);
+                        }
+                    }
+                }
+            }
+        }
+        wavs.sort();
+        // Si la ruta actual no está en la lista pero existe, ponerla primera
+        if !self.process_form.wav_path.is_empty() {
+            let cur = PathBuf::from(&self.process_form.wav_path);
+            if cur.exists() && !wavs.contains(&cur) {
+                wavs.insert(0, cur);
+            }
+        }
+        // Preseleccionar primer wav si el campo está vacío
+        if self.process_form.wav_path.is_empty() {
+            if let Some(first) = wavs.first() {
+                self.process_form.wav_path = first.display().to_string();
+                self.process_picker_index = 0;
+            }
+        } else if let Some(pos) = wavs
+            .iter()
+            .position(|p| p.display().to_string() == self.process_form.wav_path)
+        {
+            self.process_picker_index = pos;
+        }
+        self.process_wavs = wavs;
+    }
+
     fn load_recent(&mut self) -> Result<()> {
         let dir = self.config.notes_dir();
         self.recent_notes.clear();
@@ -398,6 +611,7 @@ pub enum AppAction {
     None,
     Quit,
     StartRecording,
+    StartProcessing,
     StopRecording,
     CancelRecording,
     TogglePause,
@@ -498,6 +712,57 @@ impl App {
 
         tokio::spawn(async move {
             // Notificar progreso.
+            let _ = progress_tx.send(UiMessage::LlmProgress(
+                "Transcribiendo audio con Whisper...".into(),
+            ));
+            let res = pipeline
+                .process_existing(&wav_path, &materia, &tema, date, &tags)
+                .await;
+            match res {
+                Ok(processed) => {
+                    let _ = tx.send(UiMessage::ProcessingFinished {
+                        note_path: processed.note_path,
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(UiMessage::Error(format!("{:#}", e)));
+                }
+            }
+        });
+    }
+
+    /// Procesa un WAV seleccionado desde la pantalla Process.
+    pub fn start_processing(&mut self) {
+        let wav_path = PathBuf::from(self.process_form.wav_path.trim());
+        let materia = self.process_form.materia.clone();
+        let tema = self.process_form.tema.clone();
+        let date = self.process_form.date;
+        let tags: Vec<String> = self
+            .process_form
+            .tags
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+
+        let pipeline = match self.pipeline() {
+            Ok(p) => p,
+            Err(e) => {
+                self.status = format!("✗ Pipeline: {:#}", e);
+                return;
+            }
+        };
+
+        self.is_busy = true;
+        self.status = format!(
+            "Procesando {} — transcribiendo...",
+            wav_path.file_name().and_then(|s| s.to_str()).unwrap_or("audio.wav")
+        );
+
+        let tx = self.tx.clone();
+        let progress_tx = self.tx.clone();
+
+        tokio::spawn(async move {
             let _ = progress_tx.send(UiMessage::LlmProgress(
                 "Transcribiendo audio con Whisper...".into(),
             ));
