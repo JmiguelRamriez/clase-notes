@@ -1,0 +1,748 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#0a0a0a">
+<title>clase-notes · Micrófono</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --surface: #161616;
+    --surface-2: #1f1f1f;
+    --border: #2a2a2a;
+    --text: #f5f5f5;
+    --text-dim: #8a8a8a;
+    --accent: #10b981;
+    --accent-glow: rgba(16, 185, 129, 0.35);
+    --danger: #ef4444;
+    --warn: #f59e0b;
+    --info: #3b82f6;
+  }
+
+  * {
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", sans-serif;
+    font-size: 16px;
+    line-height: 1.5;
+    overflow-x: hidden;
+    overscroll-behavior: none;
+  }
+
+  body {
+    display: flex;
+    flex-direction: column;
+    min-height: 100vh;
+    min-height: 100dvh;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+
+  header {
+    padding: 20px 24px 8px;
+  }
+
+  header h1 {
+    margin: 0;
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+
+  header .subtitle {
+    margin: 4px 0 0;
+    color: var(--text-dim);
+    font-size: 13px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  main {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    padding: 16px 24px 24px;
+    gap: 20px;
+  }
+
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 18px;
+  }
+
+  .status-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+  }
+
+  .status-dot {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    flex-shrink: 0;
+    transition: background 0.2s ease, box-shadow 0.2s ease;
+  }
+
+  .status-dot.disconnected { background: var(--text-dim); }
+  .status-dot.connecting {
+    background: var(--info);
+    box-shadow: 0 0 12px var(--info);
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  .status-dot.streaming {
+    background: var(--accent);
+    box-shadow: 0 0 14px var(--accent-glow);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  .status-dot.error {
+    background: var(--danger);
+    box-shadow: 0 0 12px var(--danger);
+  }
+
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.45; }
+  }
+
+  .status-text {
+    flex: 1;
+  }
+
+  .status-text .label {
+    font-weight: 600;
+    font-size: 15px;
+    margin: 0;
+  }
+
+  .status-text .detail {
+    color: var(--text-dim);
+    font-size: 12px;
+    margin: 2px 0 0;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .meter-card {
+    padding: 18px 18px 14px;
+  }
+
+  .meter-label {
+    display: flex;
+    justify-content: space-between;
+    font-size: 12px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 10px;
+  }
+
+  .meter-value {
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .meter-bar {
+    height: 8px;
+    background: var(--surface-2);
+    border-radius: 4px;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .meter-fill {
+    height: 100%;
+    width: 0%;
+    background: linear-gradient(90deg, var(--accent), #fbbf24 70%, var(--danger) 100%);
+    border-radius: 4px;
+    transition: width 0.05s linear;
+  }
+
+  .info-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  .info-cell {
+    background: var(--surface-2);
+    border-radius: 10px;
+    padding: 10px 12px;
+  }
+
+  .info-cell .k {
+    font-size: 11px;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+
+  .info-cell .v {
+    font-size: 15px;
+    font-weight: 600;
+    margin-top: 2px;
+    font-variant-numeric: tabular-nums;
+    word-break: break-all;
+  }
+
+  .controls {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-top: auto;
+  }
+
+  button {
+    width: 100%;
+    border: none;
+    border-radius: 14px;
+    padding: 18px 20px;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    cursor: pointer;
+    transition: transform 0.08s ease, background 0.2s ease, opacity 0.2s ease;
+    font-family: inherit;
+  }
+
+  button:active {
+    transform: scale(0.97);
+  }
+
+  button:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+
+  .btn-primary {
+    background: var(--accent);
+    color: #04140d;
+    box-shadow: 0 8px 24px -8px var(--accent-glow);
+  }
+
+  .btn-primary:disabled {
+    box-shadow: none;
+  }
+
+  .btn-danger {
+    background: var(--danger);
+    color: #fff;
+  }
+
+  .btn-secondary {
+    background: var(--surface-2);
+    color: var(--text);
+    border: 1px solid var(--border);
+    font-size: 14px;
+    padding: 12px;
+  }
+
+  .banner {
+    border-radius: 12px;
+    padding: 12px 14px;
+    font-size: 13px;
+    line-height: 1.45;
+    display: none;
+  }
+
+  .banner.visible {
+    display: block;
+  }
+
+  .banner.warn {
+    background: rgba(245, 158, 11, 0.12);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    color: #fcd34d;
+  }
+
+  .banner.error {
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.35);
+    color: #fca5a5;
+  }
+
+  footer {
+    text-align: center;
+    color: var(--text-dim);
+    font-size: 11px;
+    padding: 8px 24px 16px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .mono {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Micrófono inalámbrico</h1>
+  <p class="subtitle">clase-notes · 16 kHz · mono · Int16</p>
+</header>
+
+<main>
+  <div id="bannerTab" class="banner warn">
+    Cambiaste de pestaña. El audio se pausará si Safari lo pone en segundo plano.
+  </div>
+
+  <div id="bannerError" class="banner error"></div>
+
+  <div class="card status-card">
+    <div id="statusDot" class="status-dot disconnected"></div>
+    <div class="status-text">
+      <p id="statusLabel" class="label">Desconectado</p>
+      <p id="statusDetail" class="detail">Toca Iniciar para comenzar</p>
+    </div>
+  </div>
+
+  <div class="card meter-card">
+    <div class="meter-label">
+      <span>Nivel de audio</span>
+      <span id="meterValue" class="meter-value">0%</span>
+    </div>
+    <div class="meter-bar"><div id="meterFill" class="meter-fill"></div></div>
+  </div>
+
+  <div class="info-grid">
+    <div class="info-cell">
+      <div class="k">Servidor</div>
+      <div id="serverHost" class="v mono">—</div>
+    </div>
+    <div class="info-cell">
+      <div class="k">Latencia</div>
+      <div id="latency" class="v mono">—</div>
+    </div>
+    <div class="info-cell">
+      <div class="k">Frames enviados</div>
+      <div id="framesSent" class="v mono">0</div>
+    </div>
+    <div class="info-cell">
+      <div class="k">Tasa real</div>
+      <div id="actualRate" class="v mono">—</div>
+    </div>
+  </div>
+
+  <div class="controls">
+    <button id="btnPrimary" class="btn-primary">Iniciar</button>
+    <button id="btnReconnect" class="btn-secondary" disabled>Reconectar</button>
+  </div>
+</main>
+
+<footer>
+  <span id="audioCtxRate">AudioContext: —</span>
+</footer>
+
+<script>
+(() => {
+  "use strict";
+
+  const TARGET_SAMPLE_RATE = 16000;
+  const SAMPLES_PER_FRAME = 320;
+  const WORKLET_NAME = "pcm-sender";
+
+  const WORKLET_SOURCE = `
+class PCMSenderProcessor extends AudioWorkletProcessor {
+  constructor() {
+    super();
+    this.buffer = [];
+  }
+  process(inputs) {
+    const input = inputs[0] && inputs[0][0];
+    if (!input || input.length === 0) return true;
+    for (let i = 0; i < input.length; i++) {
+      this.buffer.push(input[i]);
+    }
+    while (this.buffer.length >= ${SAMPLES_PER_FRAME}) {
+      const frame = this.buffer.splice(0, ${SAMPLES_PER_FRAME});
+      const int16 = new Int16Array(${SAMPLES_PER_FRAME});
+      for (let i = 0; i < ${SAMPLES_PER_FRAME}; i++) {
+        let s = frame[i];
+        if (s > 1) s = 1;
+        else if (s < -1) s = -1;
+        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      }
+      this.port.postMessage(int16.buffer, [int16.buffer]);
+    }
+    return true;
+  }
+}
+registerProcessor('${WORKLET_NAME}', PCMSenderProcessor);
+`;
+
+  const els = {
+    btnPrimary: document.getElementById("btnPrimary"),
+    btnReconnect: document.getElementById("btnReconnect"),
+    statusDot: document.getElementById("statusDot"),
+    statusLabel: document.getElementById("statusLabel"),
+    statusDetail: document.getElementById("statusDetail"),
+    meterFill: document.getElementById("meterFill"),
+    meterValue: document.getElementById("meterValue"),
+    bannerTab: document.getElementById("bannerTab"),
+    bannerError: document.getElementById("bannerError"),
+    serverHost: document.getElementById("serverHost"),
+    latency: document.getElementById("latency"),
+    framesSent: document.getElementById("framesSent"),
+    actualRate: document.getElementById("actualRate"),
+    audioCtxRate: document.getElementById("audioCtxRate"),
+  };
+
+  const state = {
+    stream: null,
+    audioContext: null,
+    sourceNode: null,
+    workletNode: null,
+    analyser: null,
+    ws: null,
+    wakeLock: null,
+    reconnectAttempt: 0,
+    reconnectTimer: null,
+    framesSent: 0,
+    rateSamples: [],
+    stoppedByUser: false,
+    started: false,
+  };
+
+  const host = location.hostname || "localhost";
+  const port = location.port || "8443";
+  const wsURL = `wss://${host}:${port}/ws`;
+  els.serverHost.textContent = `${host}:${port}`;
+
+  function setStatus(kind, label, detail) {
+    els.statusDot.className = "status-dot " + kind;
+    els.statusLabel.textContent = label;
+    els.statusDetail.textContent = detail || "";
+  }
+
+  function showError(msg) {
+    els.bannerError.textContent = msg;
+    els.bannerError.classList.add("visible");
+    clearTimeout(showError._t);
+    showError._t = setTimeout(() => {
+      els.bannerError.classList.remove("visible");
+    }, 6000);
+  }
+
+  function clearError() {
+    els.bannerError.classList.remove("visible");
+  }
+
+  async function acquireWakeLock() {
+    if (!("wakeLock" in navigator)) return;
+    try {
+      state.wakeLock = await navigator.wakeLock.request("screen");
+      state.wakeLock.addEventListener("release", () => {
+        if (state.started && !document.hidden) acquireWakeLock();
+      });
+    } catch (e) {
+      console.warn("Wake Lock falló:", e);
+    }
+  }
+
+  function releaseWakeLock() {
+    if (state.wakeLock) {
+      state.wakeLock.release().catch(() => {});
+      state.wakeLock = null;
+    }
+  }
+
+  function connectWebSocket() {
+    if (state.ws && (state.ws.readyState === WebSocket.OPEN || state.ws.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    setStatus("connecting", "Conectando...", wsURL);
+
+    let ws;
+    try {
+      ws = new WebSocket(wsURL);
+    } catch (e) {
+      showError("No se pudo abrir el WebSocket: " + e.message);
+      scheduleReconnect();
+      return;
+    }
+    state.ws = ws;
+    ws.binaryType = "arraybuffer";
+
+    ws.addEventListener("open", () => {
+      state.reconnectAttempt = 0;
+      setStatus("streaming", "Transmitiendo", `wss://${host}:${port}/ws`);
+      clearError();
+      els.btnReconnect.disabled = true;
+    });
+
+    ws.addEventListener("message", (ev) => {
+      if (typeof ev.data === "string" && ev.data.startsWith("PONG:")) {
+        const t = parseInt(ev.data.slice(5), 10);
+        if (!isNaN(t)) {
+          const rtt = Date.now() - t;
+          els.latency.textContent = rtt + " ms";
+        }
+      }
+    });
+
+    ws.addEventListener("error", () => {
+      showError("Error de conexión con el servidor");
+    });
+
+    ws.addEventListener("close", (ev) => {
+      if (state.workletNode) {
+        try { state.workletNode.port.onmessage = null; } catch (_) {}
+      }
+      state.ws = null;
+      if (state.stoppedByUser) {
+        setStatus("disconnected", "Desconectado", "Detenido por el usuario");
+        els.btnPrimary.textContent = "Iniciar";
+        els.btnPrimary.disabled = false;
+        els.btnReconnect.disabled = true;
+        return;
+      }
+      setStatus("error", "Desconectado", `código ${ev.code}`);
+      els.btnReconnect.disabled = false;
+      scheduleReconnect();
+    });
+  }
+
+  function scheduleReconnect() {
+    if (state.reconnectTimer || state.stoppedByUser) return;
+    const delays = [1000, 2000, 4000, 8000, 10000];
+    const wait = delays[Math.min(state.reconnectAttempt, delays.length - 1)];
+    state.reconnectAttempt++;
+    setStatus("connecting", "Reconectando...", `en ${Math.round(wait / 1000)}s (intento ${state.reconnectAttempt})`);
+    state.reconnectTimer = setTimeout(() => {
+      state.reconnectTimer = null;
+      connectWebSocket();
+    }, wait);
+  }
+
+  function sendFrame(int16Buffer) {
+    if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+    try {
+      state.ws.send(int16Buffer);
+      state.framesSent++;
+      els.framesSent.textContent = state.framesSent.toLocaleString();
+      const now = performance.now();
+      state.rateSamples.push(now);
+      while (state.rateSamples.length > 0 && now - state.rateSamples[0] > 2000) {
+        state.rateSamples.shift();
+      }
+      if (state.rateSamples.length > 1) {
+        const span = (now - state.rateSamples[0]) / 1000;
+        const fps = (state.rateSamples.length - 1) / span;
+        els.actualRate.textContent = fps.toFixed(1) + " fps";
+      }
+    } catch (e) {
+      console.warn("send falló:", e);
+    }
+  }
+
+  function startMeterLoop() {
+    const buf = new Float32Array(1024);
+    function tick() {
+      if (!state.analyser || !state.started) return;
+      state.analyser.getFloatTimeDomainData(buf);
+      let sumSq = 0;
+      for (let i = 0; i < buf.length; i++) sumSq += buf[i] * buf[i];
+      const rms = Math.sqrt(sumSq / buf.length);
+      const db = 20 * Math.log10(rms || 1e-7);
+      const pct = Math.max(0, Math.min(100, ((db + 60) / 60) * 100));
+      els.meterFill.style.width = pct.toFixed(1) + "%";
+      els.meterValue.textContent = pct.toFixed(0) + "%";
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  }
+
+  function startPingLoop() {
+    function ping() {
+      if (!state.started) return;
+      if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+        try { state.ws.send("PING:" + Date.now()); } catch (_) {}
+      }
+      setTimeout(ping, 3000);
+    }
+    setTimeout(ping, 1500);
+  }
+
+  async function start() {
+    clearError();
+    state.stoppedByUser = false;
+
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      showError("Este navegador no soporta captura de audio");
+      return;
+    }
+    if (!window.AudioContext && !window.webkitAudioContext) {
+      showError("Web Audio API no disponible");
+      return;
+    }
+    if (!window.AudioWorkletNode) {
+      showError("AudioWorklet no soportado — usa iOS 14.3+ o Safari actualizado");
+      return;
+    }
+
+    try {
+      state.stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          sampleRate: { ideal: TARGET_SAMPLE_RATE },
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
+        video: false,
+      });
+    } catch (e) {
+      showError("Permiso de micrófono denegado: " + (e.message || e.name));
+      setStatus("error", "Error", "Sin acceso al micrófono");
+      return;
+    }
+
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    const ctx = new AudioCtx({
+      latencyHint: "interactive",
+      sampleRate: TARGET_SAMPLE_RATE,
+    });
+    state.audioContext = ctx;
+    els.audioCtxRate.textContent = `AudioContext: ${ctx.sampleRate} Hz`;
+
+    if (ctx.state === "suspended") {
+      try { await ctx.resume(); } catch (_) {}
+    }
+
+    try {
+      const blob = new Blob([WORKLET_SOURCE], { type: "application/javascript" });
+      const url = URL.createObjectURL(blob);
+      await ctx.audioWorklet.addModule(url);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      showError("No se pudo cargar el AudioWorklet: " + (e.message || e));
+      cleanupAudio();
+      return;
+    }
+
+    const source = ctx.createMediaStreamSource(state.stream);
+    const worklet = new AudioWorkletNode(ctx, WORKLET_NAME, {
+      numberOfInputs: 1,
+      numberOfOutputs: 0,
+      channelCount: 1,
+    });
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.4;
+
+    worklet.port.onmessage = (ev) => {
+      if (ev.data instanceof ArrayBuffer) sendFrame(ev.data);
+    };
+
+    source.connect(analyser);
+    source.connect(worklet);
+
+    state.sourceNode = source;
+    state.workletNode = worklet;
+    state.analyser = analyser;
+    state.started = true;
+    state.framesSent = 0;
+    state.rateSamples = [];
+
+    connectWebSocket();
+    startMeterLoop();
+    startPingLoop();
+    acquireWakeLock();
+
+    els.btnPrimary.textContent = "Detener";
+    els.btnPrimary.classList.remove("btn-primary");
+    els.btnPrimary.classList.add("btn-danger");
+    els.btnReconnect.disabled = true;
+  }
+
+  function cleanupAudio() {
+    state.started = false;
+    try { state.workletNode && state.workletNode.disconnect(); } catch (_) {}
+    try { state.analyser && state.analyser.disconnect(); } catch (_) {}
+    try { state.sourceNode && state.sourceNode.disconnect(); } catch (_) {}
+    if (state.audioContext) {
+      try { state.audioContext.close(); } catch (_) {}
+    }
+    state.workletNode = null;
+    state.analyser = null;
+    state.sourceNode = null;
+    state.audioContext = null;
+    if (state.stream) {
+      state.stream.getTracks().forEach((t) => t.stop());
+      state.stream = null;
+    }
+  }
+
+  function stop() {
+    state.stoppedByUser = true;
+    if (state.reconnectTimer) {
+      clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = null;
+    }
+    if (state.ws) {
+      try { state.ws.close(1000, "user stop"); } catch (_) {}
+    }
+    cleanupAudio();
+    releaseWakeLock();
+    setStatus("disconnected", "Desconectado", "Detenido por el usuario");
+    els.btnPrimary.textContent = "Iniciar";
+    els.btnPrimary.classList.remove("btn-danger");
+    els.btnPrimary.classList.add("btn-primary");
+    els.btnReconnect.disabled = true;
+    els.meterFill.style.width = "0%";
+    els.meterValue.textContent = "0%";
+  }
+
+  els.btnPrimary.addEventListener("click", () => {
+    if (state.started) stop();
+    else start();
+  });
+
+  els.btnReconnect.addEventListener("click", () => {
+    state.reconnectAttempt = 0;
+    if (state.reconnectTimer) {
+      clearTimeout(state.reconnectTimer);
+      state.reconnectTimer = null;
+    }
+    connectWebSocket();
+  });
+
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      els.bannerTab.classList.add("visible");
+    } else {
+      els.bannerTab.classList.remove("visible");
+      if (state.audioContext && state.audioContext.state === "suspended") {
+        state.audioContext.resume().catch(() => {});
+      }
+      if (state.started) acquireWakeLock();
+    }
+  });
+
+  window.addEventListener("pagehide", () => {
+    if (state.started) stop();
+  });
+
+  window.addEventListener("beforeunload", () => {
+    if (state.started) stop();
+  });
+
+  setStatus("disconnected", "Desconectado", "Toca Iniciar para comenzar");
+})();
+</script>
+
+</body>
+</html>

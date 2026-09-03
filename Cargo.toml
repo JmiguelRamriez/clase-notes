@@ -1,0 +1,73 @@
+[package]
+name = "clase-notes"
+version = "0.1.0"
+edition = "2021"
+authors = ["josemr21"]
+description = "Graba clases, transcribe con Whisper local, resume con LLM y guarda notas en Obsidian"
+license = "MIT"
+repository = "https://github.com/josemr21/clase-notes"
+
+[[bin]]
+name = "clase-notes"
+path = "src/main.rs"
+
+[features]
+default = []
+# Habilita captura de audio real desde el micrófono (requiere
+# libasound2-dev en Debian/Ubuntu, alsa-lib-devel en Fedora, o
+# equivalente en macOS/Windows). Sin esta feature, el comando
+# `record` y la TUI de grabación devuelven un error explicando cómo
+# recompilar. El comando `process` siempre funciona.
+audio-capture = ["dep:cpal"]
+
+[dependencies]
+# Audio
+cpal = { version = "0.15", optional = true }
+hound = "3.5"
+# Whisper
+whisper-rs = { version = "0.12", default-features = false, features = ["whisper-cpp-log"] }
+# HTTP / LLM / WebSocket
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+axum = { version = "0.7", features = ["ws"] }
+tokio-rustls = "0.26"
+rustls = { version = "0.23", features = ["ring"] }
+rcgen = "0.13"
+rustls-pemfile = "2"
+hyper = { version = "1", features = ["server", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+tower = "0.5"
+base64 = "0.22"
+qr2term = "0.3"
+arboard = "3"
+# TUI
+ratatui = "0.28"
+crossterm = "0.28"
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+# Serialización
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+# Utilidades
+chrono = { version = "0.4", features = ["serde"] }
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+directories = "5"
+tokio = { version = "1", features = ["full"] }
+tokio-stream = "0.1"
+uuid = { version = "1", features = ["v4"] }
+dirs = "5"
+unicode-normalization = "0.1"
+
+[dev-dependencies]
+tempfile = "3"
+mockito = "1"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 1
+strip = true
