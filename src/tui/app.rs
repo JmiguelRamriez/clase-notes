@@ -322,6 +322,28 @@ impl App {
                     (self.record_form.editing_field + 1) % 5;
                 Ok(AppAction::None)
             }
+            KeyCode::BackTab => {
+                // Shift+Tab retrocede
+                if self.record_form.editing_field == 0 {
+                    self.record_form.editing_field = 4;
+                } else {
+                    self.record_form.editing_field -= 1;
+                }
+                Ok(AppAction::None)
+            }
+            KeyCode::Up => {
+                if self.record_form.editing_field == 0 {
+                    self.record_form.editing_field = 4;
+                } else {
+                    self.record_form.editing_field -= 1;
+                }
+                Ok(AppAction::None)
+            }
+            KeyCode::Down => {
+                self.record_form.editing_field =
+                    (self.record_form.editing_field + 1) % 5;
+                Ok(AppAction::None)
+            }
             KeyCode::Backspace => {
                 // Backspace solo aplica a campos de texto (0-2).
                 if self.record_form.editing_field <= 2 {
@@ -339,6 +361,25 @@ impl App {
                         self.audio_preset = self.audio_preset.next();
                     }
                     _ => {}
+                }
+                Ok(AppAction::None)
+            }
+            KeyCode::Char(' ') => {
+                // Espacio también cicla Fuente/Filtro cuando están enfocados (más descubrible)
+                match self.record_form.editing_field {
+                    3 => {
+                        self.audio_source = self.audio_source.next();
+                        return Ok(AppAction::None);
+                    }
+                    4 => {
+                        self.audio_preset = self.audio_preset.next();
+                        return Ok(AppAction::None);
+                    }
+                    _ => {}
+                }
+                // En campos de texto, espacio es un carácter normal
+                if self.record_form.editing_field <= 2 {
+                    self.record_form_push(' ');
                 }
                 Ok(AppAction::None)
             }
@@ -393,9 +434,9 @@ impl App {
                 }
                 Ok(AppAction::None)
             }
-            KeyCode::Up | KeyCode::Char('k') => {
-                // Si estamos en el campo WAV, navegar el picker
+            KeyCode::Up => {
                 if self.process_form.editing_field == 0 && !self.process_wavs.is_empty() {
+                    // Navegar picker cuando el foco está en WAV
                     if self.process_picker_index > 0 {
                         self.process_picker_index -= 1;
                     } else {
@@ -404,16 +445,26 @@ impl App {
                     if let Some(p) = self.process_wavs.get(self.process_picker_index) {
                         self.process_form.wav_path = p.display().to_string();
                     }
+                } else {
+                    // Navegar entre campos
+                    if self.process_form.editing_field == 0 {
+                        self.process_form.editing_field = 3;
+                    } else {
+                        self.process_form.editing_field -= 1;
+                    }
                 }
                 Ok(AppAction::None)
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Down => {
                 if self.process_form.editing_field == 0 && !self.process_wavs.is_empty() {
                     self.process_picker_index =
                         (self.process_picker_index + 1) % self.process_wavs.len();
                     if let Some(p) = self.process_wavs.get(self.process_picker_index) {
                         self.process_form.wav_path = p.display().to_string();
                     }
+                } else {
+                    self.process_form.editing_field =
+                        (self.process_form.editing_field + 1) % 4;
                 }
                 Ok(AppAction::None)
             }

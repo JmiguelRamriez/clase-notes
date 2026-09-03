@@ -89,19 +89,19 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
         Line::from(vec![
             Span::styled("  Fuente:   ", label_style(3)),
             Span::styled(app.audio_source.label(), field_style(3)),
-            Span::styled("  (Tab para cambiar)", theme::label_style()),
+            Span::styled("  (←/→ o Espacio)", theme::label_style()),
         ]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  Filtro:   ", label_style(4)),
             Span::styled(app.audio_preset.label(), field_style(4)),
-            Span::styled("  (Tab para ciclar)", theme::label_style()),
+            Span::styled("  (←/→ o Espacio)", theme::label_style()),
         ]),
     ];
     if !app.is_busy {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "  Tab para cambiar campo · Enter para empezar a grabar",
+            "  Tab/↑/↓ cambia campo · ←/→/Espacio cambia Fuente/Filtro · Enter graba · Esc vuelve",
             theme::label_style(),
         )));
     } else {

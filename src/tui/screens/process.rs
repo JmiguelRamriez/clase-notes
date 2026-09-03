@@ -99,7 +99,7 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     if !app.is_busy {
         lines.push(Line::from(""));
         lines.push(Line::from(Span::styled(
-            "  Tab / Shift+Tab para cambiar campo · ↑/↓ navega WAVs · Enter procesa · Esc vuelve",
+            "  Tab/↑/↓ cambia campo · ↑/↓ en WAV navega lista · Enter procesa · Esc vuelve · r refresca",
             theme::label_style(),
         )));
     } else {
