@@ -187,14 +187,30 @@ async fn run_doctor(cfg: &Config) {
         );
     }
 
-    // 2. Ollama.
+    // 2. LLM (Ollama o Groq según config).
     let client = llm::LlmClient::new(cfg.llm.clone()).unwrap();
     match client.health_check().await {
-        Ok(_) => println!(
-            "✓ Ollama responde en {} (modelo '{}' disponible)",
-            cfg.llm.endpoint, cfg.llm.model
-        ),
-        Err(e) => println!("✗ Ollama: {}", e),
+        Ok(_) => {
+            if cfg.llm.is_groq() {
+                println!(
+                    "✓ Groq responde (modelo '{}' via api.groq.com)",
+                    cfg.llm.groq_model
+                );
+            } else {
+                println!(
+                    "✓ Ollama responde en {} (modelo '{}' disponible)",
+                    cfg.llm.endpoint, cfg.llm.model
+                );
+            }
+        }
+        Err(e) => {
+            if cfg.llm.is_groq() {
+                println!("✗ Groq: {}", e);
+                println!("  Tip: export GROQ_API_KEY='gsk_...' o poné groq_api_key en config.toml (chmod 600) y revocá la key expuesta");
+            } else {
+                println!("✗ Ollama: {}", e);
+            }
+        }
     }
 
     // 3. Bóveda.

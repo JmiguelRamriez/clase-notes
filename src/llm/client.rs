@@ -34,11 +34,13 @@ impl LlmClient {
         Ok(Self { cfg, http })
     }
 
-    /// Verifica que Ollama esté corriendo y el modelo esté disponible.
-    /// Ahora valida que `cfg.model` esté realmente pulleado, no solo que el
-    /// daemon responda 200. Evita el fallo tardío `400 model not found` en
-    /// `generate()` después de grabar/transcribir.
+    /// Verifica que el LLM esté corriendo y el modelo esté disponible.
+    /// - Ollama: valida `GET /api/tags` y que `cfg.model` esté pulleado.
+    /// - Groq: valida `GROQ_API_KEY` y `GET /openai/v1/models` con Bearer.
     pub async fn health_check(&self) -> Result<()> {
+        if self.cfg.is_groq() {
+            return self.health_check_groq().await;
+        }
         #[derive(Deserialize)]
         struct TagsResp {
             models: Option<Vec<ModelEntry>>,
@@ -72,9 +74,6 @@ impl LlmClient {
                 self.cfg.model
             );
         }
-        // Ollama puede devolver `llama3.1:8b` o `llama3.1:latest`. Aceptamos
-        // match exacto o por prefijo antes de `:` para no ser demasiado estricto,
-        // pero priorizamos el exacto.
         let wanted = self.cfg.model.trim();
         let found = models.iter().any(|m| {
             let n = m.name.trim();
@@ -94,8 +93,44 @@ impl LlmClient {
         Ok(())
     }
 
-    /// Llamada genérica a `/api/generate` (no streaming). Devuelve la respuesta.
+    async fn health_check_groq(&self) -> Result<()> {
+        let key = self.cfg.effective_groq_api_key().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Groq seleccionado (provider=groq) pero no hay API key. \
+                 Poné GROQ_API_KEY en env o groq_api_key en config.toml (chmod 600) y revocá la key expuesta."
+            )
+        })?;
+        let url = "https://api.groq.com/openai/v1/models";
+        let resp = self
+            .http
+            .get(url)
+            .header("Authorization", format!("Bearer {}", key))
+            .send()
+            .await
+            .with_context(|| format!("GET {}", url))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let txt = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Groq no responde OK: {} — {}", status, txt);
+        }
+        // Opcional: verificar que groq_model esté en la lista, si no solo avisar
+        let body: serde_json::Value = resp.json().await.context("parseando /v1/models de Groq")?;
+        let wanted = self.cfg.groq_model.trim();
+        if let Some(arr) = body.get("data").and_then(|d| d.as_array()) {
+            let found = arr.iter().any(|m| m.get("id").and_then(|v| v.as_str()).map(|s| s == wanted).unwrap_or(false));
+            if !found {
+                tracing::warn!("Groq modelo '{}' no aparece en /v1/models, igual se intentará usar", wanted);
+            }
+        }
+        tracing::info!("Groq OK (modelo {})", wanted);
+        Ok(())
+    }
+
+    /// Llamada genérica (no streaming). Usa Ollama o Groq según provider.
     async fn generate(&self, system: &str, user: &str) -> Result<String> {
+        if self.cfg.is_groq() {
+            return self.generate_groq(system, user).await;
+        }
         #[derive(Serialize)]
         struct Req<'a> {
             model: &'a str,
@@ -145,6 +180,71 @@ impl LlmClient {
         }
         let parsed: Resp = resp.json().await.context("parseando respuesta Ollama")?;
         Ok(parsed.response)
+    }
+
+    async fn generate_groq(&self, system: &str, user: &str) -> Result<String> {
+        #[derive(Serialize)]
+        struct ChatReq<'a> {
+            model: &'a str,
+            messages: Vec<Msg<'a>>,
+            temperature: f32,
+            stream: bool,
+        }
+        #[derive(Serialize)]
+        struct Msg<'a> {
+            role: &'a str,
+            content: &'a str,
+        }
+        #[derive(Deserialize)]
+        struct ChatResp {
+            choices: Vec<Choice>,
+        }
+        #[derive(Deserialize)]
+        struct Choice {
+            message: MsgOwned,
+        }
+        #[derive(Deserialize)]
+        struct MsgOwned {
+            content: String,
+        }
+
+        let key = self.cfg.effective_groq_api_key().ok_or_else(|| {
+            anyhow::anyhow!("GROQ_API_KEY no configurada para provider=groq")
+        })?;
+        let body = ChatReq {
+            model: &self.cfg.groq_model,
+            messages: vec![
+                Msg { role: "system", content: system },
+                Msg { role: "user", content: user },
+            ],
+            temperature: self.cfg.temperature,
+            stream: false,
+        };
+        let url = "https://api.groq.com/openai/v1/chat/completions";
+        let resp = self
+            .http
+            .post(url)
+            .header("Authorization", format!("Bearer {}", key))
+            .json(&body)
+            .send()
+            .await
+            .with_context(|| format!("POST {}", url))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let txt = resp.text().await.unwrap_or_default();
+            anyhow::bail!("Groq devolvió {}: {}", status, txt);
+        }
+        let parsed: ChatResp = resp.json().await.context("parseando respuesta Groq")?;
+        let content = parsed
+            .choices
+            .into_iter()
+            .next()
+            .map(|c| c.message.content)
+            .unwrap_or_default();
+        if content.trim().is_empty() {
+            anyhow::bail!("Groq devolvió respuesta vacía");
+        }
+        Ok(content)
     }
 
     /// Limpia la transcripción cruda.
@@ -322,6 +422,7 @@ Clase de cálculo sobre límites.
             endpoint: server.url(),
             model: "llama3.1:8b".into(),
             temperature: 0.3,
+            ..Default::default()
         };
         let client = LlmClient::new(cfg).unwrap();
         assert!(client.health_check().await.is_ok());
@@ -341,6 +442,7 @@ Clase de cálculo sobre límites.
             endpoint: server.url(),
             model: "llama3.1:8b".into(),
             temperature: 0.3,
+            ..Default::default()
         };
         let client = LlmClient::new(cfg).unwrap();
         let err = client.health_check().await.unwrap_err().to_string();
@@ -362,8 +464,25 @@ Clase de cálculo sobre límites.
             endpoint: server.url(),
             model: "llama3.1:8b".into(),
             temperature: 0.3,
+            ..Default::default()
         };
         let client = LlmClient::new(cfg).unwrap();
         assert!(client.health_check().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn groq_health_check_fails_without_key() {
+        let cfg = crate::config::LlmConfig {
+            provider: "groq".into(),
+            groq_model: "llama-3.3-70b-versatile".into(),
+            groq_api_key: None,
+            endpoint: "http://localhost:11434".into(),
+            model: "dummy".into(),
+            temperature: 0.3,
+        };
+        std::env::remove_var("GROQ_API_KEY");
+        let client = LlmClient::new(cfg).unwrap();
+        let err = client.health_check().await.unwrap_err().to_string();
+        assert!(err.contains("GROQ_API_KEY"), "err: {}", err);
     }
 }

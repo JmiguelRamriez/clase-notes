@@ -49,12 +49,35 @@ pub struct WhisperConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LlmConfig {
+    /// Proveedor LLM: "ollama" (default, local) o "groq" (nube, rápido)
+    #[serde(default = "default_provider")]
+    pub provider: String,
     #[serde(default = "default_endpoint")]
     pub endpoint: String,
     #[serde(default = "default_model")]
     pub model: String,
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+    /// Modelo Groq (OpenAI-compatible). Ej: llama-3.3-70b-versatile, mixtral-8x7b-32768, llama-3.1-8b-instant
+    #[serde(default = "default_groq_model")]
+    pub groq_model: String,
+    /// API key Groq. Preferible vía env GROQ_API_KEY (no se escribe en git).
+    /// Si se pone aquí, el archivo debe tener chmod 600. Se lee también de env si está vacío.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub groq_api_key: Option<String>,
+}
+
+impl Default for LlmConfig {
+    fn default() -> Self {
+        Self {
+            provider: default_provider(),
+            endpoint: default_endpoint(),
+            model: default_model(),
+            temperature: default_temperature(),
+            groq_model: default_groq_model(),
+            groq_api_key: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -92,8 +115,14 @@ fn default_chunk_secs() -> u32 {
 fn default_endpoint() -> String {
     "http://localhost:11434".to_string()
 }
+fn default_provider() -> String {
+    "ollama".to_string()
+}
 fn default_model() -> String {
     "llama3.1:8b".to_string()
+}
+fn default_groq_model() -> String {
+    "openai/gpt-oss-20b".to_string()
 }
 fn default_temperature() -> f32 {
     0.3
@@ -106,6 +135,25 @@ fn default_phone_port() -> u16 {
 }
 fn default_phone_preset() -> String {
     "normal".to_string()
+}
+
+impl LlmConfig {
+    /// API key efectiva: prioriza env GROQ_API_KEY sobre config.toml
+    pub fn effective_groq_api_key(&self) -> Option<String> {
+        if let Ok(k) = std::env::var("GROQ_API_KEY") {
+            if !k.trim().is_empty() {
+                return Some(k.trim().to_string());
+            }
+        }
+        self.groq_api_key
+            .as_ref()
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+    }
+
+    pub fn is_groq(&self) -> bool {
+        self.provider.trim().eq_ignore_ascii_case("groq")
+    }
 }
 
 impl Default for PhoneConfig {
@@ -139,9 +187,12 @@ impl Default for Config {
                 chunk_secs: default_chunk_secs(),
             },
             llm: LlmConfig {
+                provider: default_provider(),
                 endpoint: default_endpoint(),
                 model: default_model(),
                 temperature: default_temperature(),
+                groq_model: default_groq_model(),
+                groq_api_key: None,
             },
             tui: TuiConfig {
                 color_theme: default_theme(),
