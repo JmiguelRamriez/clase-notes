@@ -23,15 +23,21 @@ async fn main() -> Result<()> {
     // Instalar crypto provider para rustls (ring).
     let _ = rustls::crypto::ring::default_provider().install_default();
 
-    // Logging.
+    // Logging: en CLI mostramos info por defecto, en TUI evitamos debug ruidoso
+    // que corrompe el alternate screen. El usuario puede activar debug con RUST_LOG=debug.
+    let cli = Cli::parse();
+    let default_filter = if matches!(cli.command, None | Some(crate::cli::Command::Tui)) {
+        "info"
+    } else {
+        "info,clase_notes=debug"
+    };
     let _ = fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| {
-            EnvFilter::new("info,clase_notes=debug")
+            EnvFilter::new(default_filter)
         }))
         .with_target(false)
         .try_init();
 
-    let cli = Cli::parse();
     let cfg = Config::load_or_init().context("cargando configuración")?;
 
     match cli.command.unwrap_or(Command::Tui) {

@@ -2,7 +2,7 @@
 
 use anyhow::Result;
 use chrono::{Local, NaiveDate};
-use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::path::PathBuf;
@@ -415,8 +415,14 @@ impl App {
                 self.screen = Screen::Menu;
                 Ok(AppAction::None)
             }
-            KeyCode::Char('r') | KeyCode::Char('R') => {
-                // Refrescar lista de WAVs
+            KeyCode::Char('r') | KeyCode::Char('R') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                // Solo Ctrl+R refresca; 'r' normal se escribe en el formulario
+                self.refresh_wav_list();
+                self.status = format!("✓ Lista refrescada ({} WAVs)", self.process_wavs.len());
+                Ok(AppAction::None)
+            }
+            KeyCode::F(5) => {
+                // F5 también refresca (atajo descubrible, no colisiona con escritura)
                 self.refresh_wav_list();
                 self.status = format!("✓ Lista refrescada ({} WAVs)", self.process_wavs.len());
                 Ok(AppAction::None)
@@ -759,15 +765,18 @@ impl App {
             .filter(|s| !s.is_empty())
             .collect();
         let tx = self.tx.clone();
-        let progress_tx = self.tx.clone();
+        // Canal para progreso de Whisper por chunk (String -> LlmProgress)
+        let (prog_tx, mut prog_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let tx_prog = self.tx.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = prog_rx.recv().await {
+                let _ = tx_prog.send(UiMessage::LlmProgress(msg));
+            }
+        });
 
         tokio::spawn(async move {
-            // Notificar progreso.
-            let _ = progress_tx.send(UiMessage::LlmProgress(
-                "Transcribiendo audio con Whisper...".into(),
-            ));
             let res = pipeline
-                .process_existing(&wav_path, &materia, &tema, date, &tags)
+                .process_existing_with_progress(&wav_path, &materia, &tema, date, &tags, Some(prog_tx))
                 .await;
             match res {
                 Ok(processed) => {
@@ -811,14 +820,17 @@ impl App {
         );
 
         let tx = self.tx.clone();
-        let progress_tx = self.tx.clone();
+        let (prog_tx, mut prog_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+        let tx_prog = self.tx.clone();
+        tokio::spawn(async move {
+            while let Some(msg) = prog_rx.recv().await {
+                let _ = tx_prog.send(UiMessage::LlmProgress(msg));
+            }
+        });
 
         tokio::spawn(async move {
-            let _ = progress_tx.send(UiMessage::LlmProgress(
-                "Transcribiendo audio con Whisper...".into(),
-            ));
             let res = pipeline
-                .process_existing(&wav_path, &materia, &tema, date, &tags)
+                .process_existing_with_progress(&wav_path, &materia, &tema, date, &tags, Some(prog_tx))
                 .await;
             match res {
                 Ok(processed) => {

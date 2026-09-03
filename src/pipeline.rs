@@ -59,17 +59,52 @@ impl Pipeline {
         date: NaiveDate,
         tags: &[String],
     ) -> Result<ProcessedClass> {
+        self.process_existing_with_progress(wav_path, materia, tema, date, tags, None)
+            .await
+    }
+
+    /// Variante con progreso para la TUI (envía Strings que se muestran como LlmProgress).
+    pub async fn process_existing_with_progress(
+        &self,
+        wav_path: &Path,
+        materia: &str,
+        tema: &str,
+        date: NaiveDate,
+        tags: &[String],
+        progress_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    ) -> Result<ProcessedClass> {
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(format!("Iniciando transcripción: {}", wav_path.display()));
+        }
         tracing::debug!("transcribiendo {}", wav_path.display());
-        let raw = self.transcriber.transcribe_file(wav_path)?;
+        // Whisper es bloqueante (CPU/GPU), lo movemos a spawn_blocking para no bloquear Tokio
+        // y permitir progreso por chunk via channel.
+        let transcriber = Arc::clone(&self.transcriber);
+        let path = wav_path.to_path_buf();
+        let pt = progress_tx.clone();
+        let raw = tokio::task::spawn_blocking(move || {
+            transcriber.transcribe_file_with_progress(&path, pt)
+        })
+        .await
+        .context("hilo de transcripción se cayó")??;
         tracing::debug!("transcripción cruda: {} chars", raw.len());
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(format!("Transcripción lista ({} chars) — limpiando con LLM...", raw.len()));
+        }
 
         if raw.trim().is_empty() {
             warn!("la transcripción quedó vacía; el LLM puede fallar");
         }
 
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send("Limpiando transcripción con LLM...".into());
+        }
         tracing::debug!("limpiando transcripción con LLM");
         let clean = self.llm.clean_text(&raw).await?;
         tracing::debug!("texto limpio: {} chars", clean.len());
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(format!("Texto limpio ({} chars) — generando resumen...", clean.len()));
+        }
 
         tracing::debug!("generando resumen estructurado con LLM");
         let summary = self.llm.summarize(&clean).await?;

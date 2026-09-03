@@ -60,6 +60,15 @@ impl WhisperTranscriber {
     /// Transcribe un archivo WAV (16 kHz mono PCM 16-bit) a texto plano.
     /// Si el WAV es multi-canal, hace downmix a mono promediando canales.
     pub fn transcribe_file(&self, wav_path: &Path) -> Result<String> {
+        self.transcribe_file_with_progress(wav_path, None)
+    }
+
+    /// Variante con progreso por chunk para la TUI: cada chunk envía un String al channel.
+    pub fn transcribe_file_with_progress(
+        &self,
+        wav_path: &Path,
+        progress_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    ) -> Result<String> {
         let mut reader = WavReader::open(wav_path)
             .with_context(|| format!("abriendo {}", wav_path.display()))?;
         let spec = reader.spec();
@@ -95,7 +104,7 @@ impl WhisperTranscriber {
 
         // Duración real después del downmix.
         let duration_secs = samples.len() as f32 / spec.sample_rate as f32;
-        tracing::info!(
+        tracing::debug!(
             "transcribiendo {} muestras ({:.1}s, {} Hz, {} ch → mono, gpu={}, chunk={}s)",
             samples.len(),
             duration_secs,
@@ -122,7 +131,7 @@ impl WhisperTranscriber {
         }
 
         // Audio largo: chunked con overlap 1s
-        self.transcribe_chunked(&samples, chunk_secs)
+        self.transcribe_chunked(&samples, chunk_secs, progress_tx)
     }
 
     fn transcribe_samples(&self, samples: &[f32]) -> Result<String> {
@@ -163,17 +172,30 @@ impl WhisperTranscriber {
         Ok(text)
     }
 
-    fn transcribe_chunked(&self, samples: &[f32], chunk_secs: u32) -> Result<String> {
+    fn transcribe_chunked(
+        &self,
+        samples: &[f32],
+        chunk_secs: u32,
+        progress_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    ) -> Result<String> {
         let chunk_len = chunk_secs as usize * 16000;
         let overlap = 16000; // 1s
         let stride = chunk_len.saturating_sub(overlap).max(1);
         let total_chunks = (samples.len() + stride - 1) / stride;
-        tracing::info!(
+        tracing::debug!(
             "chunked: {} chunks de {}s (overlap 1s), total {:.1}s",
             total_chunks,
             chunk_secs,
             samples.len() as f32 / 16000.0
         );
+        // Primer progreso para TUI
+        if let Some(tx) = &progress_tx {
+            let _ = tx.send(format!(
+                "Whisper chunk 0/{} — iniciando ({}s total)",
+                total_chunks,
+                (samples.len() as f32 / 16000.0).round() as u32
+            ));
+        }
         let mut full_text = String::new();
         let mut chunk_idx = 0usize;
         let mut start = 0usize;
@@ -183,7 +205,7 @@ impl WhisperTranscriber {
             chunk_idx += 1;
             let from = start as f32 / 16000.0;
             let to = end as f32 / 16000.0;
-            tracing::info!(
+            tracing::debug!(
                 "  chunk {}/{} [{:.1}s - {:.1}s] {} samples",
                 chunk_idx,
                 total_chunks,
@@ -191,6 +213,13 @@ impl WhisperTranscriber {
                 to,
                 chunk.len()
             );
+            // Enviar progreso a TUI si hay channel
+            if let Some(tx) = &progress_tx {
+                let _ = tx.send(format!(
+                    "Whisper {}/{} [{:.0}s-{:.0}s] transcribiendo...",
+                    chunk_idx, total_chunks, from, to
+                ));
+            }
             let mut txt = self.transcribe_samples(chunk)?;
             // Dedup overlap: si el chunk anterior termina igual que el prefijo del nuevo,
             // recortar duplicado (heurística simple de 3 palabras)
