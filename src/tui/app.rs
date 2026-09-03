@@ -52,6 +52,9 @@ pub struct App {
     pub process_picker_index: usize,
     pub status: String,
     pub is_busy: bool,
+    /// Progreso 0-100 para la barra Gauge cuando se transcribe (chunked)
+    pub progress_percent: u8,
+    pub progress_detail: String,
     pub recent_notes: Vec<PathBuf>,
     /// Flag global para detener grabación (compartido con AudioRecorder).
     pub stop_flag: Arc<AtomicBool>,
@@ -137,6 +140,8 @@ impl App {
             process_picker_index: 0,
             status: String::from("Listo. Usa ↑/↓ y Enter."),
             is_busy: false,
+            progress_percent: 0,
+            progress_detail: String::new(),
             recent_notes: Vec::new(),
             stop_flag: Arc::new(AtomicBool::new(false)),
             tx,
@@ -721,16 +726,39 @@ pub fn poll_messages(app: &mut App) {
                 app.status = "✗ Grabación cancelada".into();
             }
             UiMessage::LlmProgress(s) => {
-                app.status = s;
+                app.status = s.clone();
+                // Intentar extraer progreso Whisper "Whisper 42/120"
+                if let Some((cur, total)) = parse_whisper_progress(&s) {
+                    if total > 0 {
+                        let pct = ((cur as f32 / total as f32) * 100.0).round() as u8;
+                        app.progress_percent = pct.min(90);
+                        app.progress_detail = s.clone();
+                    }
+                } else if s.contains("Limpiando") {
+                    app.progress_percent = 92;
+                    app.progress_detail = s.clone();
+                } else if s.contains("generando resumen") || s.contains("Texto limpio") {
+                    app.progress_percent = 95;
+                    app.progress_detail = s.clone();
+                } else if s.contains("Iniciando") {
+                    app.progress_percent = 5;
+                    app.progress_detail = s.clone();
+                }
             }
             UiMessage::ProcessingFinished { note_path } => {
                 app.is_busy = false;
+                app.progress_percent = 100;
+                app.progress_detail = "¡Completado!".into();
                 // Mostrar nombre del archivo, no ruta completa.
                 let filename = note_path
                     .file_name()
                     .and_then(|f| f.to_str())
                     .unwrap_or("nota.md");
-                app.status = format!("✓ Nota: {}", filename);
+                // Mensaje final obvio y persistente
+                app.status = format!("✓ ¡Listo! Nota creada: {} — Esc para ver en Recientes", filename);
+                // Beep para notificar (bell)
+                print!("\x07");
+                let _ = std::io::Write::flush(&mut std::io::stdout());
             }
             UiMessage::PhoneServerReady(state) => {
                 app.phone_state = Some(state);
@@ -738,9 +766,44 @@ pub fn poll_messages(app: &mut App) {
             }
             UiMessage::Error(e) => {
                 app.is_busy = false;
+                app.progress_percent = 0;
+                app.progress_detail = String::new();
                 app.status = format!("✗ {}", e);
             }
         }
+    }
+}
+
+fn parse_whisper_progress(s: &str) -> Option<(usize, usize)> {
+    // Busca "Whisper 42/120" o "Whisper chunk 42/120"
+    let lower = s.to_lowercase();
+    let pos = lower.find("whisper")?;
+    let rest = &lower[pos..];
+    // Encontrar primer dígito
+    let mut nums = Vec::new();
+    let mut cur = String::new();
+    for ch in rest.chars() {
+        if ch.is_ascii_digit() {
+            cur.push(ch);
+        } else if !cur.is_empty() {
+            if let Ok(n) = cur.parse::<usize>() {
+                nums.push(n);
+            }
+            cur.clear();
+            if nums.len() >= 2 {
+                break;
+            }
+        }
+    }
+    if !cur.is_empty() {
+        if let Ok(n) = cur.parse::<usize>() {
+            nums.push(n);
+        }
+    }
+    if nums.len() >= 2 {
+        Some((nums[0], nums[1]))
+    } else {
+        None
     }
 }
 
@@ -765,6 +828,10 @@ impl App {
             .filter(|s| !s.is_empty())
             .collect();
         let tx = self.tx.clone();
+        // Reset progreso y marcar busy para que la UI muestre Gauge
+        self.is_busy = true;
+        self.progress_percent = 5;
+        self.progress_detail = "Iniciando...".into();
         // Canal para progreso de Whisper por chunk (String -> LlmProgress)
         let (prog_tx, mut prog_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
         let tx_prog = self.tx.clone();
@@ -814,6 +881,8 @@ impl App {
         };
 
         self.is_busy = true;
+        self.progress_percent = 5;
+        self.progress_detail = "Iniciando transcripción...".into();
         self.status = format!(
             "Procesando {} — transcribiendo...",
             wav_path.file_name().and_then(|s| s.to_str()).unwrap_or("audio.wav")

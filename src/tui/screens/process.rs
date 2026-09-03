@@ -2,7 +2,7 @@
 
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Gauge, List, ListItem, Paragraph};
 use ratatui::Frame;
 
 use crate::tui::app::App;
@@ -163,9 +163,41 @@ pub fn draw(f: &mut Frame, area: Rect, app: &App) {
     );
     f.render_widget(picker, chunks[2]);
 
-    // Status
-    let status = Paragraph::new(app.status.clone())
-        .style(theme::label_style())
-        .block(Block::default().borders(Borders::TOP));
-    f.render_widget(status, chunks[3]);
+    // Status + progreso obvio
+    if app.is_busy && app.progress_percent > 0 {
+        // Gauge + detalle en 2 líneas
+        let gauge = Gauge::default()
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(Span::styled(
+                        format!(" Progreso {}% ", app.progress_percent),
+                        theme::title_style(),
+                    )),
+            )
+            .gauge_style(theme::success_style())
+            .percent(app.progress_percent as u16)
+            .label(Span::styled(
+                app.progress_detail.clone(),
+                theme::value_style(),
+            ));
+        f.render_widget(gauge, chunks[3]);
+    } else if app.progress_percent == 100 && !app.is_busy {
+        // Mensaje final obvio con fondo success
+        let done = Paragraph::new(vec![
+            Line::from(Span::styled(app.status.clone(), theme::success_style())),
+            Line::from(Span::styled(
+                format!("Detalle: {}", app.progress_detail),
+                theme::label_style(),
+            )),
+        ])
+        .style(theme::success_style())
+        .block(Block::default().borders(Borders::ALL).title(" ✓ Completado "));
+        f.render_widget(done, chunks[3]);
+    } else {
+        let status = Paragraph::new(app.status.clone())
+            .style(theme::label_style())
+            .block(Block::default().borders(Borders::TOP));
+        f.render_widget(status, chunks[3]);
+    }
 }

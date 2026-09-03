@@ -158,9 +158,17 @@ impl WhisperTranscriber {
         let num_segments = state.full_n_segments().context("contando segmentos")?;
         let mut text = String::new();
         for i in 0..num_segments {
-            let segment = state
-                .full_get_segment_text(i)
-                .context("leyendo segmento")?;
+            // Usar lossy para no abortar 1h por un byte inválido (ruido/música)
+            let segment = match state.full_get_segment_text(i) {
+                Ok(s) => s,
+                Err(e) if e.to_string().contains("Invalid UTF-8") => {
+                    tracing::warn!("segmento {} UTF-8 inválido, usando lossy: {}", i, e);
+                    state
+                        .full_get_segment_text_lossy(i)
+                        .context("leyendo segmento lossy")?
+                }
+                Err(e) => return Err(e).context("leyendo segmento"),
+            };
             let segment = segment.trim();
             if !segment.is_empty() {
                 if !text.is_empty() {
