@@ -74,7 +74,7 @@ impl WhisperTranscriber {
         let spec = reader.spec();
 
         // Convertir samples a f32 normalizado.
-        let raw_samples: Vec<f32> = match (spec.bits_per_sample, spec.sample_format) {
+        let mut raw_samples: Vec<f32> = match (spec.bits_per_sample, spec.sample_format) {
             (16, hound::SampleFormat::Int) => reader
                 .samples::<i16>()
                 .map(|s| s.map(|v| v as f32 / i16::MAX as f32))
@@ -89,6 +89,33 @@ impl WhisperTranscriber {
                 spec.sample_format
             ),
         };
+
+        // Fallback para WAV con header corrupto (hound devuelve 0 samples pero el archivo tiene datos)
+        // Esto pasó con un WAV de 62MB con header max-size sin finalizar.
+        if raw_samples.is_empty() {
+            if let Ok(meta) = std::fs::metadata(wav_path) {
+                if meta.len() > 44 {
+                    tracing::warn!(
+                        "header WAV corrupto (0 samples) pero archivo tiene {} bytes, intentando lectura raw",
+                        meta.len()
+                    );
+                    if let Ok(bytes) = std::fs::read(wav_path) {
+                        if bytes.len() > 44 {
+                            let pcm_bytes = &bytes[44..];
+                            let mut fallback = Vec::with_capacity(pcm_bytes.len() / 2);
+                            for chunk in pcm_bytes.chunks_exact(2) {
+                                let s = i16::from_le_bytes([chunk[0], chunk[1]]);
+                                fallback.push(s as f32 / i16::MAX as f32);
+                            }
+                            if !fallback.is_empty() {
+                                tracing::info!("fallback raw leyó {} samples", fallback.len());
+                                raw_samples = fallback;
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Downmix multi-canal a mono (promediando canales).
         let channels = spec.channels as usize;
@@ -149,6 +176,12 @@ impl WhisperTranscriber {
         params.set_print_progress(false);
         params.set_print_timestamps(false);
         params.set_n_threads(num_cpus());
+        // Para audios largos con música/ruido, deshabilitar fallback de temperatura/logprob
+        // que hace que Whisper reintente con temp 0.2 y tarde mucho (visto en 32min con música)
+        params.set_temperature(0.0);
+        params.set_temperature_inc(0.0);
+        params.set_logprob_thold(-10.0); // no fallar por avg_logprobs < -1.0
+        params.set_no_speech_thold(0.6); // skip música/silencio más rápido
 
         let mut state = self.ctx.create_state().context("creando estado Whisper")?;
         state
@@ -228,7 +261,31 @@ impl WhisperTranscriber {
                     chunk_idx, total_chunks, from, to
                 ));
             }
-            let mut txt = self.transcribe_samples(chunk)?;
+            // Fast path para música: si los primeros 5s son "[Música]", asumir todo el chunk es música
+            // Evita transcribir 30s de música que Whisper tarda mucho en intentar decodificar
+            let mut txt = if chunk.len() > 80000 {
+                let preview = &chunk[..80000.min(chunk.len())];
+                // Solo si el preview no es silencio (RMS > 0.003)
+                if !is_silent(preview) {
+                    if let Ok(preview_txt) = self.transcribe_samples(preview) {
+                        if preview_txt.to_lowercase().contains("música") {
+                            tracing::debug!("chunk {}/{} detectado como música, se omite resto", chunk_idx, total_chunks);
+                            if let Some(tx) = &progress_tx {
+                                let _ = tx.send(format!("Whisper {}/{} — música detectada, saltando", chunk_idx, total_chunks));
+                            }
+                            "[Música]".to_string()
+                        } else {
+                            self.transcribe_samples(chunk)?
+                        }
+                    } else {
+                        self.transcribe_samples(chunk)?
+                    }
+                } else {
+                    self.transcribe_samples(chunk)?
+                }
+            } else {
+                self.transcribe_samples(chunk)?
+            };
             // Dedup overlap: si el chunk anterior termina igual que el prefijo del nuevo,
             // recortar duplicado (heurística simple de 3 palabras)
             if !full_text.is_empty() && !txt.is_empty() {
